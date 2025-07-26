@@ -1,0 +1,11 @@
+﻿{
+	"name": "LootPoolLimiter",
+	"version_number": "1.0.0",
+	"website_url": "https://github.com/Tizitendo/LootPoolLimiter",
+	"description": "Randomly remove a set amount of items from the itempool",
+	"dependencies": [
+		"bbepis-BepInExPack-5.4.2108",
+		"RiskofThunder-HookGenPatcher-1.2.3",
+		"RiskofThunder-R2API_Items-1.0.1"
+	]
+}
