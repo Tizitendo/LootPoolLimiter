@@ -1,5 +1,4 @@
 using BepInEx;
-using BepInEx.Configuration;
 using Newtonsoft.Json.Utilities;
 using R2API;
 using RoR2;
@@ -9,13 +8,6 @@ using System.Linq;
 using UnityEngine.AddressableAssets;
 using static RoR2.PickupPickerController;
 using Random = UnityEngine.Random;
-using RiskOfOptions;
-using RiskOfOptions.Options;
-using RiskOfOptions.OptionConfigs;
-using UnityEngine;
-using System.IO;
-using System.Reflection;
-using Path = System.IO.Path;
 
 namespace LootPoolLimiter
 {
@@ -28,7 +20,7 @@ namespace LootPoolLimiter
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "Onyx";
         public const string PluginName = "LootPoolLimiter";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.1.0";
 
         public static String[] affectedPools = { "dtChest1" , "dtChest2", "dtSonorousEcho", "dtSmallChestDamage",
             "dtSmallChestHealing", "dtSmallChestUtility", "dtCategoryChest2Damage", "dtCategoryChest2Healing",
@@ -36,17 +28,12 @@ namespace LootPoolLimiter
             "dtVoidTriple", "dtTier1Item", "dtTier2Item", "dtTier3Item", "GeodeRewardDropTable", "dtShrineHalcyoniteTier1",
             "dtShrineHalcyoniteTier2", "dtShrineHalcyoniteTier3"};
 
-        public static ConfigEntry<String> ConfigWhites { get; set; }
-        public static ConfigEntry<String> ConfigGreens { get; set; }
-        public static ConfigEntry<String> ConfigReds { get; set; }
-        public static ConfigEntry<float> forceCategories { get; set; }
-        public static ConfigEntry<bool> affectScrappers { get; set; }
-        public static ConfigEntry<bool> affectCradles { get; set; }
-        public static ConfigEntry<bool> affectVoidKey { get; set; }
 
         public static BasicPickupDropTable dtDuplicatorTier1;
         public static BasicPickupDropTable dtDuplicatorTier2;
         public static BasicPickupDropTable dtDuplicatorTier3;
+        public static BasicPickupDropTable dtChest1;
+        //public static WeightedSelection<PickupIndex> smallChestSelection;
 
         public static int numWhites;
         public static int numGreens;
@@ -60,22 +47,200 @@ namespace LootPoolLimiter
         public static float[] categoryWeightsWhite = new float[3];
         public static float[] categoryWeightsGreen = new float[3];
         public static float[] categoryWeightsRed = new float[3];
+        public static float[] speedWeights = new float[3];
         public static ItemTag[] categoryTags = { ItemTag.Damage, ItemTag.Utility, ItemTag.Healing };
 
         public void Awake()
         {
             Log.Init(Logger);
-            InitConfig();
+            LootPoolLimiterConfig.InitConfig(Config);
             RoR2.Run.onRunStartGlobal += start_blacklist;
+
             On.RoR2.BasicPickupDropTable.GenerateWeightedSelection += filter_basic_loot;
             On.RoR2.PickupPickerController.GenerateOptionsFromDropTablePlusForcedStorm += fix_halc_loot;
-            On.RoR2.PickupTransmutationManager.RebuildAvailablePickupGroups += filter_scrapper;
+            On.RoR2.PickupTransmutationManager.RebuildAvailablePickupGroups += filter_printers;
             On.RoR2.ShopTerminalBehavior.Start += fix_soup_always_affected;
+        }
+
+        private void start_blacklist(Run run)
+        {
+            load_config();
+            //get_weights(categoryWeightsWhite, run.availableTier1DropList, numWhites);
+            //get_weights(categoryWeightsGreen, run.availableTier2DropList, numGreens);
+            //get_weights(categoryWeightsRed, run.availableTier3DropList, numReds);
+            get_category_weights(ItemTier.Tier1, run);
+            get_category_weights(ItemTier.Tier2, run);
+            get_category_weights(ItemTier.Tier3, run);
+            SotsItemCount = 0;
+            init_void_relationships();
+            blockedWhites = create_blacklist(new List<PickupIndex>(run.availableTier1DropList), numWhites);
+            blockedGreens = create_blacklist(new List<PickupIndex>(run.availableTier2DropList), numGreens);
+            blockedReds = create_blacklist(new List<PickupIndex>(run.availableTier3DropList), numReds);
+            PickupDropTable.RegenerateAll(run);
+        }
+
+        private void init_void_relationships()
+        {
+            voidPairs = new Dictionary<ItemDef, ItemDef>();
+            foreach (ItemDef.Pair relationship in ItemCatalog.GetItemPairsForRelationship(Addressables.LoadAssetAsync<ItemRelationshipType>("RoR2/DLC1/Common/ContagiousItem.asset").WaitForCompletion()))
+            {
+                voidPairs.Add(relationship.itemDef1, relationship.itemDef2);
+            }
+        }
+
+        private List<PickupIndex> create_blacklist(List<PickupIndex> itemList, int allowedCount)
+        {
+            if (allowedCount < 0)
+            {
+                return new List<PickupIndex>();
+            }
+
+            List<PickupIndex> blockedItems = new List<PickupIndex>(itemList);
+            foreach (ItemDef item in voidPairs.Values)
+            {
+                blockedItems.Add(PickupCatalog.FindPickupIndex(item.itemIndex));
+            }
+            List<PickupIndex> blockableItems = new List<PickupIndex>(blockedItems);
+            for (int i = 0; i < allowedCount; i++)
+            {
+                int random = Random.Range(0, blockableItems.Count);
+                ItemDef item = ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(blockableItems[random]).itemIndex);
+                if (countupTag(item))
+                {
+                    //Log.Info(ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(blockableItems[random]).itemIndex).nameToken);
+                    blockedItems.Remove(blockableItems[random]);
+                    if (voidPairs.ContainsKey(item))
+                    {
+                        blockedItems.Remove(PickupCatalog.FindPickupIndex(voidPairs[item].itemIndex));
+                    }
+                    if (item.ContainsTag(ItemTag.HalcyoniteShrine))
+                    {
+                        SotsItemCount = Math.Min(SotsItemCount + 1, 2);
+                    }
+                }
+                else
+                {
+                    //Log.Info("no");
+                    //Log.Info(ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(blockableItems[random]).itemIndex).nameToken);
+                    i--;
+                }
+                blockableItems.RemoveAt(random);
+                if (blockableItems.Count <= 0)
+                {
+                    break;
+                }
+            }
+            return blockedItems;
+        }
+
+        private void get_category_weights(ItemTier tier, Run run)
+        {
+            int numAllowed;
+            List<PickupIndex> availableDropList;
+            float[] categoryWeights;
+            switch (tier)
+            {
+                case ItemTier.Tier1:
+                    availableDropList = run.availableTier1DropList;
+                    numAllowed = numWhites;
+                    categoryWeights = categoryWeightsWhite;
+                    break;
+                case ItemTier.Tier2:
+                    availableDropList = run.availableTier2DropList;
+                    numAllowed = numGreens;
+                    categoryWeights = categoryWeightsGreen;
+                    break;
+                case ItemTier.Tier3:
+                    availableDropList = run.availableTier3DropList;
+                    numAllowed = numReds;
+                    categoryWeights = categoryWeightsRed;
+                    break;
+                default:
+                    return;
+            }
+            foreach (PickupIndex item in availableDropList)
+            {
+                //Log.Info(item.pickupDef.internalName.Substring(10));
+                //get weights for speed category
+                if (LootPoolLimiterConfig.SpeedIncluded.Value.Split(", ").Contains(item.pickupDef.internalName.Substring(10)) && LootPoolLimiterConfig.speedCategory.Value)
+                {
+                    speedWeights[(int)tier]++;
+                }
+                else
+                {
+                    for (int i = 0; i < categoryTags.Length; i++)
+                    {
+                        if (ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(item).itemIndex).ContainsTag(categoryTags[i]))
+                        {
+                            categoryWeights[i]++;
+                        }
+                    }
+                }
+            }
+
+            for (int i = 0; i < categoryTags.Length; i++)
+            {
+                categoryWeights[i] = (categoryWeights[i] / availableDropList.Count) * numAllowed;
+            }
+            speedWeights[(int)tier] = (speedWeights[(int)tier] / availableDropList.Count) * numAllowed;
+        }
+
+        private bool countupTag(ItemDef item)
+        {
+            float[] categoryWeights;
+            int speedWeightsTier;
+            float min = 0.33f;
+            if (LootPoolLimiterConfig.speedCategory.Value)
+            {
+                min = 0.25f;
+            }
+            switch (item.tier)
+            {
+                case ItemTier.Tier1:
+                    categoryWeights = categoryWeightsWhite;
+                    break;
+                case ItemTier.Tier2:
+                    categoryWeights = categoryWeightsGreen;
+                    break;
+                case ItemTier.Tier3:
+                    categoryWeights = categoryWeightsRed;
+                    break;
+                default:
+                    return false;
+            }
+
+            // apply weight for speed category
+            if (LootPoolLimiterConfig.SpeedIncluded.Value.Split(", ").Contains(PickupCatalog.FindPickupIndex(item.itemIndex).pickupDef.internalName.Substring(10)) && LootPoolLimiterConfig.speedCategory.Value)
+            {
+                if (speedWeights[(int)item.tier] < min)
+                {
+                    return false;
+                }
+                speedWeights[(int)item.tier]--;
+                return true;
+            }
+
+            for (int i = 0; i < categoryTags.Length; i++)
+            {
+                if (item.ContainsTag(categoryTags[i]) && categoryWeights[i] < min)
+                {
+                    return false;
+                }
+            }
+
+            for (int i = 0; i < categoryTags.Length; i++)
+            {
+                if (item.ContainsTag(categoryTags[i]))
+                {
+                    categoryWeights[i] -= 1 - LootPoolLimiterConfig.forceCategories.Value / 100;
+                }
+            }
+            return true;
         }
 
         public void fix_soup_always_affected(On.RoR2.ShopTerminalBehavior.orig_Start orig, ShopTerminalBehavior self)
         {
-            if (!affectScrappers.Value)
+            if (!LootPoolLimiterConfig.affectPrinters.Value)
             {
                 if (self.name.Contains("LunarCauldron, WhiteToGreen"))
                 {
@@ -90,7 +255,6 @@ namespace LootPoolLimiter
                     self.dropTable = dtDuplicatorTier1;
                 }
             }
-
             orig(self);
         }
 
@@ -121,130 +285,18 @@ namespace LootPoolLimiter
                 return Random.Range(min, max + 1);
             }
             Config.Reload();
-            numWhites = parse_itemnum(ConfigWhites.Value);
-            numGreens = parse_itemnum(ConfigGreens.Value);
-            numReds = parse_itemnum(ConfigReds.Value);
-        }
-
-        private void get_weights(float[] categoryWeights, List<PickupIndex> availableDropList, int numAllowed)
-        {
-            foreach (PickupIndex item in availableDropList)
-            {
-                for (int i = 0; i < categoryTags.Length; i++)
-                {
-                    if (ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(item).itemIndex).ContainsTag(categoryTags[i]))
-                    {
-                        categoryWeights[i]++;
-                    }
-                }
-            }
-
-            for (int i = 0; i < categoryTags.Length; i++)
-            {
-                categoryWeights[i] = (categoryWeights[i] / availableDropList.Count) * (availableDropList.Count - numAllowed);
-            }
-        }
-
-        private bool countupTag(ItemDef item)
-        {
-            float[] categoryWeights;
-            switch (item.tier)
-            {
-                case ItemTier.Tier1:
-                    categoryWeights = categoryWeightsWhite;
-                    break;
-                case ItemTier.Tier2:
-                    categoryWeights = categoryWeightsGreen;
-                    break;
-                case ItemTier.Tier3:
-                    categoryWeights = categoryWeightsRed;
-                    break;
-                default:
-                    return false;
-            }
-            for (int i = 0; i < categoryTags.Length; i++)
-            {
-                if (item.ContainsTag(categoryTags[i]) && categoryWeights[i] < 0.5 * (1 + forceCategories.Value / 10))
-                {
-                    return false;
-                }
-            }
-
-            for (int i = 0; i < categoryTags.Length; i++)
-            {
-                if (item.ContainsTag(categoryTags[i]))
-                {
-                    categoryWeights[i]--;
-                }
-            }
-            return true;
-        }
-
-        private void start_blacklist(Run run)
-        {
-            load_config();
-            get_weights(categoryWeightsWhite, run.availableTier1DropList, numWhites);
-            get_weights(categoryWeightsGreen, run.availableTier2DropList, numGreens);
-            get_weights(categoryWeightsRed, run.availableTier3DropList, numReds);
-            SotsItemCount = 0;
-            init_void_relationships();
-            blockedWhites = create_blacklist(new List<PickupIndex>(run.availableTier1DropList), numWhites);
-            blockedGreens = create_blacklist(new List<PickupIndex>(run.availableTier2DropList), numGreens);
-            blockedReds = create_blacklist(new List<PickupIndex>(run.availableTier3DropList), numReds);
-        }
-
-        private void init_void_relationships()
-        {
-            voidPairs = new Dictionary<ItemDef, ItemDef>();
-            foreach (ItemDef.Pair relationship in ItemCatalog.GetItemPairsForRelationship(Addressables.LoadAssetAsync<ItemRelationshipType>("RoR2/DLC1/Common/ContagiousItem.asset").WaitForCompletion()))
-            {
-                voidPairs.Add(relationship.itemDef1, relationship.itemDef2);
-            }
-        }
-
-        private List<PickupIndex> create_blacklist(List<PickupIndex> itemList, int blacklistCount)
-        {
-            List<PickupIndex> blockedItems = new List<PickupIndex>();
-            if (blacklistCount < 0)
-            {
-                return blockedItems;
-            }
-            for (int i = itemList.Count - blacklistCount - 1; i >= 0; i--)
-            {
-                if (itemList.Count <= 1)
-                {
-                    break;
-                }
-                int random = Random.Range(0, itemList.Count);
-                ItemDef item = ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(itemList[random]).itemIndex);
-                if (countupTag(item))
-                {
-                    blockedItems.Add(itemList[random]);
-                    if (voidPairs.ContainsKey(item))
-                    {
-                        blockedItems.Add(PickupCatalog.FindPickupIndex(voidPairs[item].itemIndex));
-                    }
-                }
-                else
-                {
-                    i++;
-                }
-                itemList.RemoveAt(random);
-            }
-
-            foreach (PickupIndex item in itemList)
-            {
-                if (ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(item).itemIndex).ContainsTag(ItemTag.HalcyoniteShrine))
-                {
-                    SotsItemCount = Math.Min(SotsItemCount + 1, 2);
-                }
-            }
-            return blockedItems;
+            numWhites = parse_itemnum(LootPoolLimiterConfig.ConfigWhites.Value);
+            numGreens = parse_itemnum(LootPoolLimiterConfig.ConfigGreens.Value);
+            numReds = parse_itemnum(LootPoolLimiterConfig.ConfigReds.Value);
         }
 
         private void filter_basic_loot(On.RoR2.BasicPickupDropTable.orig_GenerateWeightedSelection orig, BasicPickupDropTable self, Run run)
         {
             orig(self, run);
+            if(blockedWhites == null || blockedGreens == null|| blockedReds == null)
+            {
+                return;
+            }
             //Log.Info(self.name);
 
             //get droptables to replace cauldrons with that of printers, before was using the same as multishops
@@ -259,30 +311,58 @@ namespace LootPoolLimiter
             else if (self.name.Contains("dtDuplicatorTier3"))
             {
                 dtDuplicatorTier3 = self;
+            } else if(self.name.Contains("dtChest1"))
+            {
+                dtChest1 = self;
             }
 
             if (!affectedPools.Contains(self.name) &&
-                !(affectScrappers.Value && self.name.Contains("dtDuplicator")) &&
-                !(affectCradles.Value && self.name.Contains("dtVoidChest")) &&
-                !(affectVoidKey.Value && self.name.Contains("dtVoidLockbox")))
+                !(LootPoolLimiterConfig.affectPrinters.Value && self.name.Contains("dtDuplicator")) &&
+                !(LootPoolLimiterConfig.affectCradles.Value && self.name.Contains("dtVoidChest")) &&
+                !(LootPoolLimiterConfig.affectVoidKey.Value && self.name.Contains("dtVoidLockbox")))
             {
                 return;
             }
-            Dictionary<ItemTier, float> prevTierAmount = get_tier_amounts(self);
+            Dictionary<ItemTier, float> prevTierAmount = get_tier_weights(self);
 
+            int numAllowed = self.selector.Count;
             for (int num = self.selector.Count - 1; num >= 0; num--)
             {
                 if (blockedWhites.Contains(self.selector.choices[num].value) ||
-                    blockedGreens.Contains(self.selector.choices[num].value))
+                    blockedGreens.Contains(self.selector.choices[num].value) ||
+                    blockedReds.Contains(self.selector.choices[num].value))
                 {
-                    self.selector.RemoveChoice(num);
+                    numAllowed--;
+                }
+            }
+
+            for (int num = self.selector.Count - 1; num >= 0; num--)
+            {
+                if (LootPoolLimiterConfig.blacklistWeight.Value == 0)
+                {
+                    if (blockedWhites.Contains(self.selector.choices[num].value) ||
+                    blockedGreens.Contains(self.selector.choices[num].value) ||
+                    blockedReds.Contains(self.selector.choices[num].value))
+                    {
+                        self.selector.ModifyChoiceWeight(num, 0);
+                    }
+                }
+                else
+                {
+                    if (!blockedWhites.Contains(self.selector.choices[num].value) &&
+                    !blockedGreens.Contains(self.selector.choices[num].value) &&
+                    !blockedReds.Contains(self.selector.choices[num].value))
+                    {
+                        self.selector.ModifyChoiceWeight(num, self.selector.choices[num].weight * (((self.selector.Count - numAllowed) / numAllowed) / (LootPoolLimiterConfig.blacklistWeight.Value / 100) - ((self.selector.Count - numAllowed) / numAllowed) + 1));
+                    }
                 }
             }
             balance_item_weight(self, prevTierAmount);
-            PickupTransmutationManager.RebuildPickupGroups();
+
+            PickupTransmutationManager.RebuildPickupGroups();        
         }
 
-        void filter_scrapper(On.RoR2.PickupTransmutationManager.orig_RebuildAvailablePickupGroups orig, Run run)
+        void filter_printers(On.RoR2.PickupTransmutationManager.orig_RebuildAvailablePickupGroups orig, Run run)
         {
             orig(run);
             for (int i = 0; i < PickupTransmutationManager.availablePickupGroups.Length; i++)
@@ -336,7 +416,7 @@ namespace LootPoolLimiter
             return shrineDrops;
         }
 
-        Dictionary<ItemTier, float> get_tier_amounts(BasicPickupDropTable self)
+        Dictionary<ItemTier, float> get_tier_weights(BasicPickupDropTable self)
         {
             Dictionary<ItemTier, float> tierAmount = new Dictionary<ItemTier, float>();
 
@@ -346,11 +426,11 @@ namespace LootPoolLimiter
                 {
                     if (tierAmount.ContainsKey(ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(choice.value).itemIndex).tier))
                     {
-                        tierAmount[ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(choice.value).itemIndex).tier] += 1;
+                        tierAmount[ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(choice.value).itemIndex).tier] += choice.weight;
                     }
                     else
                     {
-                        tierAmount.Add(ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(choice.value).itemIndex).tier, 1);
+                        tierAmount.Add(ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(choice.value).itemIndex).tier, choice.weight);
                     }
                 }
             }
@@ -359,7 +439,7 @@ namespace LootPoolLimiter
 
         void balance_item_weight(BasicPickupDropTable self, Dictionary<ItemTier, float> prevTierAmount)
         {
-            Dictionary<ItemTier, float> tierAmount = get_tier_amounts(self);
+            Dictionary<ItemTier, float> tierAmount = get_tier_weights(self);
             List<ItemTier> tierkeys = new List<ItemTier>();
             foreach (ItemTier tier in tierAmount.Keys)
             {
@@ -377,83 +457,6 @@ namespace LootPoolLimiter
                 {
                     self.selector.ModifyChoiceWeight(i, self.selector.choices[i].weight * tierAmount[ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(self.selector.choices[i].value).itemIndex).tier]);
                 }
-            }
-        }
-
-        private void InitConfig()
-        {
-            ConfigWhites = Config.Bind<String>(
-            "General",
-            "White Items",
-                    "15-25",
-            "How many white items are in the loot pool. write 2 numbers seperated by \"-\" to limit the pool a random amount in that range (5-10). -1 for no limit"
-            );
-            ConfigGreens = Config.Bind<String>(
-            "General",
-            "Green Items",
-                    "10-15",
-            "How many green items are in the loot pool. write 2 numbers seperated by \"-\" to limit the pool a random amount in that range (5-10). -1 for no limit"
-            );
-            ConfigReds = Config.Bind<String>(
-            "General",
-            "Red Items",
-                    "-1",
-            "How many red items are in the loot pool. write 2 numbers seperated by \"-\" to limit the pool a random amount in that range (5-10). -1 for no limit"
-            );
-            forceCategories = Config.Bind<float>(
-            "General",
-            "Category ratio variance",
-                    10,
-            "Determines how much the ratios can differ from the base game. \nEnsures that you can't get a build with only healing etc.\n Higher values equals more randomness.\n (min:0, max:100)"
-            );
-            affectScrappers = Config.Bind<bool>(
-            "General",
-            "Affect scrappers",
-                    false,
-            "Limits the loot pool of scrappers as well"
-            );
-            affectCradles = Config.Bind<bool>(
-            "General",
-            "Affect cradles",
-                    false,
-            "Only allow voided variants of whitelisted items from cradles"
-            );
-            affectVoidKey = Config.Bind<bool>(
-            "General",
-            "Affect voidKey",
-                    false,
-            "Only allow voided variants of whitelisted items from void keyboxes"
-            );
-
-            ModSettingsManager.SetModDescription("Randomly remove a set amount of items from the itempool");
-            ModSettingsManager.AddOption(new StringInputFieldOption(ConfigWhites));
-            ModSettingsManager.AddOption(new StringInputFieldOption(ConfigGreens));
-            ModSettingsManager.AddOption(new StringInputFieldOption(ConfigReds));
-            ModSettingsManager.AddOption(new StepSliderOption(forceCategories, new StepSliderConfig() { min = 0, max = 100, increment = 1f }));
-            ModSettingsManager.AddOption(new CheckBoxOption(affectScrappers));
-            ModSettingsManager.AddOption(new CheckBoxOption(affectCradles));
-            ModSettingsManager.AddOption(new CheckBoxOption(affectVoidKey));
-            SetSpriteDefaultIcon();
-        }
-
-        void SetSpriteDefaultIcon()
-        {
-            try
-            {
-                string fullName = new DirectoryInfo(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)).FullName;
-                Texture2D texture2D = new Texture2D(256, 256);
-                if (texture2D.LoadImage(File.ReadAllBytes(Path.Combine(fullName, "icon.png"))))
-                {
-                    ModSettingsManager.SetModIcon(Sprite.Create(texture2D, new Rect(0f, 0f, texture2D.width, texture2D.height), new Vector2(0.5f, 0.5f)));
-                }
-                else
-                {
-                    Log.Error("Failed to load icon.png");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error("Failed to load icon.png\n" + ex);
             }
         }
     }
