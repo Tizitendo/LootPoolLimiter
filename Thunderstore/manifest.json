@@ -1,6 +1,6 @@
 ﻿{
 	"name": "LootPoolLimiter",
-	"version_number": "1.1.0",
+	"version_number": "1.1.1",
 	"website_url": "https://github.com/Tizitendo/LootPoolLimiter",
 	"description": "Increase item stacking by removing a set amount of items from the itempool",
 	"dependencies": [

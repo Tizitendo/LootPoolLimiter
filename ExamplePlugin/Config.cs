@@ -17,7 +17,7 @@ public static class LootPoolLimiterConfig
     public static ConfigEntry<String> ConfigReds { get; set; }
     public static ConfigEntry<bool> speedCategory { get; set; }
     public static ConfigEntry<String> SpeedIncluded { get; set; }
-    public static ConfigEntry<float> forceCategories { get; set; }
+    public static ConfigEntry<float> categoryVariance { get; set; }
     public static ConfigEntry<float> blacklistWeight { get; set; }
     public static ConfigEntry<bool> affectPrinters { get; set; }
     public static ConfigEntry<bool> affectCradles { get; set; }
@@ -81,7 +81,7 @@ public static class LootPoolLimiterConfig
         "SpeedBoostPickup, SprintBonus, AttackSpeedAndMoveSpeed, Hoof, Feather, MoveSpeedOnKill, SprintOutOfCombat, JumpBoost, BoostAllStats",
         "Items that should belong in the speed category, seperated by \", \" (SpeedBoostPickup, SprintBonus)"
         );
-        forceCategories = config.Bind<float>(
+        categoryVariance = config.Bind<float>(
         "Categories",
         "Category ratio variance",
                 10,
@@ -96,7 +96,7 @@ public static class LootPoolLimiterConfig
 
         ModSettingsManager.AddOption(new CheckBoxOption(speedCategory));
         ModSettingsManager.AddOption(new StringInputFieldOption(SpeedIncluded));
-        ModSettingsManager.AddOption(new StepSliderOption(forceCategories, new StepSliderConfig() { min = 0, max = 100, increment = 1f }));
+        ModSettingsManager.AddOption(new StepSliderOption(categoryVariance, new StepSliderConfig() { min = 0, max = 100, increment = 1f }));
         ModSettingsManager.AddOption(new CheckBoxOption(affectPrinters));
         ModSettingsManager.AddOption(new CheckBoxOption(affectCradles));
         ModSettingsManager.AddOption(new CheckBoxOption(affectVoidKey));

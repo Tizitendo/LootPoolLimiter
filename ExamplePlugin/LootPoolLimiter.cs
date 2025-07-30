@@ -5,6 +5,7 @@ using RoR2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using UnityEngine;
 using UnityEngine.AddressableAssets;
 using static RoR2.PickupPickerController;
 using Random = UnityEngine.Random;
@@ -20,7 +21,7 @@ namespace LootPoolLimiter
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "Onyx";
         public const string PluginName = "LootPoolLimiter";
-        public const string PluginVersion = "1.1.0";
+        public const string PluginVersion = "1.1.1";
 
         public static String[] affectedPools = { "dtChest1" , "dtChest2", "dtSonorousEcho", "dtSmallChestDamage",
             "dtSmallChestHealing", "dtSmallChestUtility", "dtCategoryChest2Damage", "dtCategoryChest2Healing",
@@ -33,7 +34,6 @@ namespace LootPoolLimiter
         public static BasicPickupDropTable dtDuplicatorTier2;
         public static BasicPickupDropTable dtDuplicatorTier3;
         public static BasicPickupDropTable dtChest1;
-        //public static WeightedSelection<PickupIndex> smallChestSelection;
 
         public static int numWhites;
         public static int numGreens;
@@ -44,10 +44,10 @@ namespace LootPoolLimiter
         public static List<PickupIndex> blockedReds;
         Dictionary<ItemDef, ItemDef> voidPairs;
         public static int SotsItemCount;
-        public static float[] categoryWeightsWhite = new float[3];
-        public static float[] categoryWeightsGreen = new float[3];
-        public static float[] categoryWeightsRed = new float[3];
-        public static float[] speedWeights = new float[3];
+        public static float[] categoryWeightsWhite = new float[4];
+        public static float[] categoryWeightsGreen = new float[4];
+        public static float[] categoryWeightsRed = new float[4];
+        //public static float[] speedWeights = new float[3];
         public static ItemTag[] categoryTags = { ItemTag.Damage, ItemTag.Utility, ItemTag.Healing };
 
         public void Awake()
@@ -60,22 +60,54 @@ namespace LootPoolLimiter
             On.RoR2.PickupPickerController.GenerateOptionsFromDropTablePlusForcedStorm += fix_halc_loot;
             On.RoR2.PickupTransmutationManager.RebuildAvailablePickupGroups += filter_printers;
             On.RoR2.ShopTerminalBehavior.Start += fix_soup_always_affected;
+            On.RoR2.ChestBehavior.BaseItemDrop += fix_scavbag_droptable;
+            On.RoR2.PickupPickerController.GenerateOptionsFromDropTable += test;
+            On.RoR2.PickupPickerController.GenerateOptionsFromArray += idk;
+            //On.RoR2.PickupPickerController.GenerateOptionsFromDropTablePlusForcedStorm += yo;
+        }
+
+        //private Option[] yo(On.RoR2.PickupPickerController.orig_GenerateOptionsFromDropTablePlusForcedStorm orig, int numOptions, PickupDropTable dropTable, PickupDropTable stormDropTable, Xoroshiro128Plus rng)
+        //{
+        //    Log.Info("test3");
+        //    Log.Info(dropTable);
+        //    Log.Info(stormDropTable);
+        //    return orig(numOptions, dropTable, stormDropTable, rng);
+        //}
+
+        private Option[] test(On.RoR2.PickupPickerController.orig_GenerateOptionsFromDropTable orig, int numOptions, PickupDropTable dropTable, Xoroshiro128Plus rng)
+        {
+            Log.Info("test1");
+            Log.Info(dropTable);
+            return orig(numOptions, dropTable, rng);
+        }
+
+        private Option[] idk(On.RoR2.PickupPickerController.orig_GenerateOptionsFromArray orig, PickupIndex[] drops)
+        {
+            Log.Info("test2");
+            Log.Info(drops);
+            return orig(drops);
+        }
+
+        private void fix_scavbag_droptable(On.RoR2.ChestBehavior.orig_BaseItemDrop orig, ChestBehavior self)
+        {
+            if (self.name.Contains("ScavBackpack"))
+            {
+                self.dropPickup = self.dropTable.GenerateDrop(self.rng);
+            }
+            orig(self);
         }
 
         private void start_blacklist(Run run)
         {
             load_config();
-            //get_weights(categoryWeightsWhite, run.availableTier1DropList, numWhites);
-            //get_weights(categoryWeightsGreen, run.availableTier2DropList, numGreens);
-            //get_weights(categoryWeightsRed, run.availableTier3DropList, numReds);
             get_category_weights(ItemTier.Tier1, run);
             get_category_weights(ItemTier.Tier2, run);
             get_category_weights(ItemTier.Tier3, run);
             SotsItemCount = 0;
             init_void_relationships();
-            blockedWhites = create_blacklist(new List<PickupIndex>(run.availableTier1DropList), numWhites);
-            blockedGreens = create_blacklist(new List<PickupIndex>(run.availableTier2DropList), numGreens);
-            blockedReds = create_blacklist(new List<PickupIndex>(run.availableTier3DropList), numReds);
+            blockedWhites = create_blacklist(run.availableTier1DropList, numWhites, categoryWeightsWhite);
+            blockedGreens = create_blacklist(run.availableTier2DropList, numGreens, categoryWeightsGreen);
+            blockedReds = create_blacklist(run.availableTier3DropList, numReds, categoryWeightsRed);
             PickupDropTable.RegenerateAll(run);
         }
 
@@ -88,9 +120,9 @@ namespace LootPoolLimiter
             }
         }
 
-        private List<PickupIndex> create_blacklist(List<PickupIndex> itemList, int allowedCount)
+        private List<PickupIndex> create_blacklist(List<PickupIndex> itemList, int allowedCount, float[] categoryWeights)
         {
-            if (allowedCount < 0)
+            if (allowedCount <= 0)
             {
                 return new List<PickupIndex>();
             }
@@ -100,35 +132,54 @@ namespace LootPoolLimiter
             {
                 blockedItems.Add(PickupCatalog.FindPickupIndex(item.itemIndex));
             }
-            List<PickupIndex> blockableItems = new List<PickupIndex>(blockedItems);
-            for (int i = 0; i < allowedCount; i++)
+
+            List<PickupIndex>[] categoryItems = { new List<PickupIndex>(), new List<PickupIndex>(), new List<PickupIndex>(), new List<PickupIndex>() };
+            foreach (PickupIndex pickupindex in itemList)
             {
-                int random = Random.Range(0, blockableItems.Count);
-                ItemDef item = ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(blockableItems[random]).itemIndex);
-                if (countupTag(item))
+                for (int i = 0; i < categoryTags.Length; i++)
                 {
-                    //Log.Info(ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(blockableItems[random]).itemIndex).nameToken);
-                    blockedItems.Remove(blockableItems[random]);
-                    if (voidPairs.ContainsKey(item))
+                    if (LootPoolLimiterConfig.SpeedIncluded.Value.Split(", ").Contains(PickupCatalog.GetPickupDef(pickupindex).internalName.Substring(10)) && LootPoolLimiterConfig.speedCategory.Value)
                     {
-                        blockedItems.Remove(PickupCatalog.FindPickupIndex(voidPairs[item].itemIndex));
+                        categoryItems[3].Add(pickupindex);
+                        break;
                     }
-                    if (item.ContainsTag(ItemTag.HalcyoniteShrine))
+                    if (ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(pickupindex).itemIndex).ContainsTag(categoryTags[i]))
                     {
-                        SotsItemCount = Math.Min(SotsItemCount + 1, 2);
+                        categoryItems[i].Add(pickupindex);
                     }
                 }
-                else
+            }
+
+            blacklistItem(Random.Range(0, 4));
+            for (int i = 1; i < allowedCount && i < itemList.Count; i++)
+            {
+                int category = Array.IndexOf(categoryWeights, categoryWeights.Max());
+                if (categoryItems[category].Count <= 0)
                 {
-                    //Log.Info("no");
-                    //Log.Info(ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(blockableItems[random]).itemIndex).nameToken);
                     i--;
+                    categoryWeights[category] -= 100;
+                    continue;
                 }
-                blockableItems.RemoveAt(random);
-                if (blockableItems.Count <= 0)
+                blacklistItem(category);
+            }
+
+            void blacklistItem(int category)
+            {
+                if(categoryItems[category].Count <= 0) { return; }
+                int random = Random.Range(0, categoryItems[category].Count);
+                ItemDef item = ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(categoryItems[category][random]).itemIndex);
+                if (voidPairs.ContainsKey(item))
                 {
-                    break;
+                    blockedItems.Remove(PickupCatalog.FindPickupIndex(voidPairs[item].itemIndex));
                 }
+                blockedItems.Remove(categoryItems[category][random]);
+
+                if (item.ContainsTag(ItemTag.HalcyoniteShrine))
+                {
+                    SotsItemCount = Math.Min(SotsItemCount + 1, 2);
+                }
+                categoryItems[category].RemoveAt(random);
+                categoryWeights[category] -= Random.Range(1 - LootPoolLimiterConfig.categoryVariance.Value / 100, 1f);
             }
             return blockedItems;
         }
@@ -164,15 +215,17 @@ namespace LootPoolLimiter
                 //get weights for speed category
                 if (LootPoolLimiterConfig.SpeedIncluded.Value.Split(", ").Contains(item.pickupDef.internalName.Substring(10)) && LootPoolLimiterConfig.speedCategory.Value)
                 {
-                    speedWeights[(int)tier]++;
+                    //speedWeights[(int)tier]++;
+                    categoryWeights[3]++;
                 }
                 else
                 {
-                    for (int i = 0; i < categoryTags.Length; i++)
+                    for (int i = Random.Range(3, 6); i >= 0; i--)
                     {
-                        if (ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(item).itemIndex).ContainsTag(categoryTags[i]))
+                        if (ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(item).itemIndex).ContainsTag(categoryTags[i % 3]))
                         {
-                            categoryWeights[i]++;
+                            categoryWeights[i % 3]++;
+                            break;
                         }
                     }
                 }
@@ -181,61 +234,9 @@ namespace LootPoolLimiter
             for (int i = 0; i < categoryTags.Length; i++)
             {
                 categoryWeights[i] = (categoryWeights[i] / availableDropList.Count) * numAllowed;
+                Log.Info(categoryWeights[i]);
             }
-            speedWeights[(int)tier] = (speedWeights[(int)tier] / availableDropList.Count) * numAllowed;
-        }
-
-        private bool countupTag(ItemDef item)
-        {
-            float[] categoryWeights;
-            int speedWeightsTier;
-            float min = 0.33f;
-            if (LootPoolLimiterConfig.speedCategory.Value)
-            {
-                min = 0.25f;
-            }
-            switch (item.tier)
-            {
-                case ItemTier.Tier1:
-                    categoryWeights = categoryWeightsWhite;
-                    break;
-                case ItemTier.Tier2:
-                    categoryWeights = categoryWeightsGreen;
-                    break;
-                case ItemTier.Tier3:
-                    categoryWeights = categoryWeightsRed;
-                    break;
-                default:
-                    return false;
-            }
-
-            // apply weight for speed category
-            if (LootPoolLimiterConfig.SpeedIncluded.Value.Split(", ").Contains(PickupCatalog.FindPickupIndex(item.itemIndex).pickupDef.internalName.Substring(10)) && LootPoolLimiterConfig.speedCategory.Value)
-            {
-                if (speedWeights[(int)item.tier] < min)
-                {
-                    return false;
-                }
-                speedWeights[(int)item.tier]--;
-                return true;
-            }
-
-            for (int i = 0; i < categoryTags.Length; i++)
-            {
-                if (item.ContainsTag(categoryTags[i]) && categoryWeights[i] < min)
-                {
-                    return false;
-                }
-            }
-
-            for (int i = 0; i < categoryTags.Length; i++)
-            {
-                if (item.ContainsTag(categoryTags[i]))
-                {
-                    categoryWeights[i] -= 1 - LootPoolLimiterConfig.forceCategories.Value / 100;
-                }
-            }
-            return true;
+            categoryWeights[3] = (categoryWeights[3] / availableDropList.Count) * numAllowed;
         }
 
         public void fix_soup_always_affected(On.RoR2.ShopTerminalBehavior.orig_Start orig, ShopTerminalBehavior self)
@@ -293,6 +294,7 @@ namespace LootPoolLimiter
         private void filter_basic_loot(On.RoR2.BasicPickupDropTable.orig_GenerateWeightedSelection orig, BasicPickupDropTable self, Run run)
         {
             orig(self, run);
+
             if(blockedWhites == null || blockedGreens == null|| blockedReds == null)
             {
                 return;
@@ -311,7 +313,7 @@ namespace LootPoolLimiter
             else if (self.name.Contains("dtDuplicatorTier3"))
             {
                 dtDuplicatorTier3 = self;
-            } else if(self.name.Contains("dtChest1"))
+            } else if (self.name.Contains("dtChest1"))
             {
                 dtChest1 = self;
             }
@@ -388,6 +390,10 @@ namespace LootPoolLimiter
 
         PickupPickerController.Option[] fix_halc_loot(On.RoR2.PickupPickerController.orig_GenerateOptionsFromDropTablePlusForcedStorm orig, int numOptions, PickupDropTable dropTable, PickupDropTable stormDropTable, Xoroshiro128Plus rng)
         {
+            if (stormDropTable == dropTable)
+            {
+                dropTable = dtChest1;
+            }
             PickupPickerController.Option[] shrineDrops = orig(numOptions, dropTable, stormDropTable, rng);
             PickupIndex[] stormdrops = stormDropTable.GenerateUniqueDrops(2, rng);
             PickupIndex[] normaldrops = dropTable.GenerateUniqueDrops(numOptions, rng);
