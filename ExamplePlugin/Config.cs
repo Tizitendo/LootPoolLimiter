@@ -123,4 +123,18 @@ public static class LootPoolLimiterConfig
             Log.Error("Failed to load icon.png\n" + ex);
         }
     }
+
+    public static void printConfig()
+    {
+        Log.Warning("ConfigWhites: " + LootPoolLimiterConfig.ConfigWhites);
+        Log.Warning("ConfigGreens: " + LootPoolLimiterConfig.ConfigGreens);
+        Log.Warning("ConfigReds: " + LootPoolLimiterConfig.ConfigReds);
+        Log.Warning("speedCategory: " + LootPoolLimiterConfig.speedCategory);
+        Log.Warning("SpeedIncluded: " + LootPoolLimiterConfig.SpeedIncluded);
+        Log.Warning("categoryVariance: " + LootPoolLimiterConfig.categoryVariance);
+        Log.Warning("blacklistWeight: " + LootPoolLimiterConfig.blacklistWeight);
+        Log.Warning("affectPrinters: " + LootPoolLimiterConfig.affectPrinters);
+        Log.Warning("affectCradles: " + LootPoolLimiterConfig.affectCradles);
+        Log.Warning("affectVoidKey: " + LootPoolLimiterConfig.affectVoidKey);
+    }
 }

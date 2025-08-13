@@ -1,3 +1,9 @@
+## 1.1.3
+- fixed some mod incompatabilities
+
+## 1.1.2
+- better error handling
+
 ## 1.1.1
 - fixed meridian halcyon blessings giving you forced reds when less than 3 sots items are available
 - fixed sometimes removing all green healing items from the lootpool even though the category varity was low

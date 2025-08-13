@@ -2,6 +2,7 @@ using BepInEx;
 using Newtonsoft.Json.Utilities;
 using R2API;
 using RoR2;
+using RoR2BepInExPack.GameAssetPaths;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,7 +22,7 @@ namespace LootPoolLimiter
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "Onyx";
         public const string PluginName = "LootPoolLimiter";
-        public const string PluginVersion = "1.1.1";
+        public const string PluginVersion = "1.1.3";
 
         public static String[] affectedPools = { "dtChest1" , "dtChest2", "dtSonorousEcho", "dtSmallChestDamage",
             "dtSmallChestHealing", "dtSmallChestUtility", "dtCategoryChest2Damage", "dtCategoryChest2Healing",
@@ -47,13 +48,18 @@ namespace LootPoolLimiter
         public static float[] categoryWeightsWhite = new float[4];
         public static float[] categoryWeightsGreen = new float[4];
         public static float[] categoryWeightsRed = new float[4];
-        //public static float[] speedWeights = new float[3];
         public static ItemTag[] categoryTags = { ItemTag.Damage, ItemTag.Utility, ItemTag.Healing };
 
         public void Awake()
         {
             Log.Init(Logger);
-            LootPoolLimiterConfig.InitConfig(Config);
+
+			BasicPickupDropTable dtDuplicatorTier1 = Addressables.LoadAssetAsync<BasicPickupDropTable>("RoR2/Base/Duplicator/dtDuplicatorTier1.asset").WaitForCompletion();
+		    BasicPickupDropTable dtDuplicatorTier2 = Addressables.LoadAssetAsync<BasicPickupDropTable>("RoR2/Base/DuplicatorLarge/dtDuplicatorTier2.asset").WaitForCompletion();
+			BasicPickupDropTable dtDuplicatorTier3 = Addressables.LoadAssetAsync<BasicPickupDropTable>("RoR2/Base/Duplicator/dtDuplicatorTier3.asset").WaitForCompletion();
+			BasicPickupDropTable dtChest1 = Addressables.LoadAssetAsync<BasicPickupDropTable>("RoR2/Base/Chest1/dtChest1.asset").WaitForCompletion();
+
+			LootPoolLimiterConfig.InitConfig(Config);
             RoR2.Run.onRunStartGlobal += start_blacklist;
 
             On.RoR2.BasicPickupDropTable.GenerateWeightedSelection += filter_basic_loot;
@@ -61,31 +67,6 @@ namespace LootPoolLimiter
             On.RoR2.PickupTransmutationManager.RebuildAvailablePickupGroups += filter_printers;
             On.RoR2.ShopTerminalBehavior.Start += fix_soup_always_affected;
             On.RoR2.ChestBehavior.BaseItemDrop += fix_scavbag_droptable;
-            On.RoR2.PickupPickerController.GenerateOptionsFromDropTable += test;
-            On.RoR2.PickupPickerController.GenerateOptionsFromArray += idk;
-            //On.RoR2.PickupPickerController.GenerateOptionsFromDropTablePlusForcedStorm += yo;
-        }
-
-        //private Option[] yo(On.RoR2.PickupPickerController.orig_GenerateOptionsFromDropTablePlusForcedStorm orig, int numOptions, PickupDropTable dropTable, PickupDropTable stormDropTable, Xoroshiro128Plus rng)
-        //{
-        //    Log.Info("test3");
-        //    Log.Info(dropTable);
-        //    Log.Info(stormDropTable);
-        //    return orig(numOptions, dropTable, stormDropTable, rng);
-        //}
-
-        private Option[] test(On.RoR2.PickupPickerController.orig_GenerateOptionsFromDropTable orig, int numOptions, PickupDropTable dropTable, Xoroshiro128Plus rng)
-        {
-            Log.Info("test1");
-            Log.Info(dropTable);
-            return orig(numOptions, dropTable, rng);
-        }
-
-        private Option[] idk(On.RoR2.PickupPickerController.orig_GenerateOptionsFromArray orig, PickupIndex[] drops)
-        {
-            Log.Info("test2");
-            Log.Info(drops);
-            return orig(drops);
         }
 
         private void fix_scavbag_droptable(On.RoR2.ChestBehavior.orig_BaseItemDrop orig, ChestBehavior self)
@@ -116,7 +97,9 @@ namespace LootPoolLimiter
             voidPairs = new Dictionary<ItemDef, ItemDef>();
             foreach (ItemDef.Pair relationship in ItemCatalog.GetItemPairsForRelationship(Addressables.LoadAssetAsync<ItemRelationshipType>("RoR2/DLC1/Common/ContagiousItem.asset").WaitForCompletion()))
             {
-                voidPairs.Add(relationship.itemDef1, relationship.itemDef2);
+                if(relationship.itemDef1 != null && relationship.itemDef2 != null) {
+					voidPairs.Add(relationship.itemDef1, relationship.itemDef2);
+				}
             }
         }
 
@@ -136,13 +119,13 @@ namespace LootPoolLimiter
             List<PickupIndex>[] categoryItems = { new List<PickupIndex>(), new List<PickupIndex>(), new List<PickupIndex>(), new List<PickupIndex>() };
             foreach (PickupIndex pickupindex in itemList)
             {
+                if (LootPoolLimiterConfig.SpeedIncluded.Value.Split(", ").Contains(PickupCatalog.GetPickupDef(pickupindex).internalName.Substring(10)) && LootPoolLimiterConfig.speedCategory.Value)
+                {
+                    categoryItems[3].Add(pickupindex);
+                    continue;
+                }
                 for (int i = 0; i < categoryTags.Length; i++)
                 {
-                    if (LootPoolLimiterConfig.SpeedIncluded.Value.Split(", ").Contains(PickupCatalog.GetPickupDef(pickupindex).internalName.Substring(10)) && LootPoolLimiterConfig.speedCategory.Value)
-                    {
-                        categoryItems[3].Add(pickupindex);
-                        break;
-                    }
                     if (ItemCatalog.GetItemDef(PickupCatalog.GetPickupDef(pickupindex).itemIndex).ContainsTag(categoryTags[i]))
                     {
                         categoryItems[i].Add(pickupindex);
@@ -153,11 +136,16 @@ namespace LootPoolLimiter
             blacklistItem(Random.Range(0, 4));
             for (int i = 1; i < allowedCount && i < itemList.Count; i++)
             {
+                if (categoryWeights.Max() <= -1000)
+                {
+                    Log.Error("endless loop.\nIf you can see this message, something went wrong. Please report it");
+                    LootPoolLimiterConfig.printConfig();
+                }
                 int category = Array.IndexOf(categoryWeights, categoryWeights.Max());
                 if (categoryItems[category].Count <= 0)
                 {
                     i--;
-                    categoryWeights[category] -= 100;
+                    categoryWeights[category] = -1000;
                     continue;
                 }
                 blacklistItem(category);
@@ -215,7 +203,6 @@ namespace LootPoolLimiter
                 //get weights for speed category
                 if (LootPoolLimiterConfig.SpeedIncluded.Value.Split(", ").Contains(item.pickupDef.internalName.Substring(10)) && LootPoolLimiterConfig.speedCategory.Value)
                 {
-                    //speedWeights[(int)tier]++;
                     categoryWeights[3]++;
                 }
                 else
@@ -234,7 +221,6 @@ namespace LootPoolLimiter
             for (int i = 0; i < categoryTags.Length; i++)
             {
                 categoryWeights[i] = (categoryWeights[i] / availableDropList.Count) * numAllowed;
-                Log.Info(categoryWeights[i]);
             }
             categoryWeights[3] = (categoryWeights[3] / availableDropList.Count) * numAllowed;
         }
@@ -298,24 +284,6 @@ namespace LootPoolLimiter
             if(blockedWhites == null || blockedGreens == null|| blockedReds == null)
             {
                 return;
-            }
-            //Log.Info(self.name);
-
-            //get droptables to replace cauldrons with that of printers, before was using the same as multishops
-            if (self.name.Contains("dtDuplicatorTier1"))
-            {
-                dtDuplicatorTier1 = self;
-            }
-            else if (self.name.Contains("dtDuplicatorTier2"))
-            {
-                dtDuplicatorTier2 = self;
-            }
-            else if (self.name.Contains("dtDuplicatorTier3"))
-            {
-                dtDuplicatorTier3 = self;
-            } else if (self.name.Contains("dtChest1"))
-            {
-                dtChest1 = self;
             }
 
             if (!affectedPools.Contains(self.name) &&
